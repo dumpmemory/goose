@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/pressly/goose/v3/database"
+	"github.com/pressly/goose/v3/internal/controller"
 	"github.com/pressly/goose/v3/internal/gooseutil"
 	"github.com/pressly/goose/v3/internal/sqlparser"
 	"go.uber.org/multierr"
@@ -24,7 +25,7 @@ type Provider struct {
 	mu sync.Mutex
 
 	db               *sql.DB
-	store            database.Store
+	store            *controller.StoreController
 	versionTableOnce sync.Once
 
 	fsys fs.FS
@@ -141,7 +142,7 @@ func newProvider(
 		db:         db,
 		fsys:       fsys,
 		cfg:        cfg,
-		store:      store,
+		store:      controller.NewStoreController(store),
 		migrations: migrations,
 	}, nil
 }
@@ -360,10 +361,18 @@ func (p *Provider) up(
 		}
 		apply = p.migrations
 	} else {
-		// optimize(mf): Listing all migrations from the database isn't great. This is only required
-		// to support the allow missing (out-of-order) feature. For users that don't use this
-		// feature, we could just query the database for the current max version and then apply
-		// migrations greater than that version.
+		// optimize(mf): Listing all migrations from the database isn't great.
+		//
+		// The ideal implementation would be to query for the current max version and then apply
+		// migrations greater than that version. However, a nice property of the current
+		// implementation is that we can make stronger guarantees about unapplied migrations.
+		//
+		// In cases where users do not use out-of-order migrations, we want to surface an error if
+		// there are older unapplied migrations. See https://github.com/pressly/goose/issues/761 for
+		// more details.
+		//
+		// And in cases where users do use out-of-order migrations, we need to build a list of older
+		// migrations that need to be applied, so we need to query for all migrations anyways.
 		dbMigrations, err := p.store.ListMigrations(ctx, conn)
 		if err != nil {
 			return nil, err
